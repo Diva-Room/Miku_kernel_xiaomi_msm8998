@@ -477,13 +477,6 @@ static int do_jit(struct bpf_prog *bpf_prog, int *addrs, u8 *image,
 			break;
 
 		case BPF_LD | BPF_IMM | BPF_DW:
-			if (insn[1].code != 0 || insn[1].src_reg != 0 ||
-			    insn[1].dst_reg != 0 || insn[1].off != 0) {
-				/* verifier must catch invalid insns */
-				pr_err("invalid BPF_LD_IMM64 insn\n");
-				return -EINVAL;
-			}
-
 			/* movabsq %rax, imm64 */
 			EMIT2(add_1mod(0x48, dst_reg), add_1reg(0xB8, dst_reg));
 			EMIT(insn[0].imm, 4);
@@ -855,7 +848,7 @@ xadd:			if (is_imm8(insn->off))
 			}
 			break;
 
-		case BPF_JMP | BPF_CALL | BPF_X:
+		case BPF_JMP | BPF_TAIL_CALL:
 			emit_bpf_tail_call(&prog);
 			break;
 
@@ -1035,7 +1028,7 @@ common_load:
 
 		ilen = prog - temp;
 		if (ilen > BPF_MAX_INSN_SIZE) {
-			pr_err("bpf_jit_compile fatal insn size error\n");
+			pr_err("bpf_jit: fatal insn size error\n");
 			return -EFAULT;
 		}
 
@@ -1050,7 +1043,7 @@ common_load:
 			 */
 			if (unlikely(proglen + ilen > oldproglen ||
 				     proglen + ilen != addrs[i])) {
-				pr_err("bpf_jit_compile fatal error\n");
+				pr_err("bpf_jit: fatal error\n");
 				return -EFAULT;
 			}
 			memcpy(image + proglen, temp, ilen);
@@ -1060,10 +1053,6 @@ common_load:
 		prog = temp;
 	}
 	return proglen;
-}
-
-void bpf_jit_compile(struct bpf_prog *prog)
-{
 }
 
 struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
