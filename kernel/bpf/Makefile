@@ -9,14 +9,15 @@ obj-$(CONFIG_BPF_SYSCALL) += btf.o
 ifeq ($(CONFIG_NET),y)
 obj-$(CONFIG_BPF_SYSCALL) += devmap.o
 obj-$(CONFIG_BPF_SYSCALL) += cpumap.o
-ifeq ($(CONFIG_STREAM_PARSER),y)
-ifeq ($(CONFIG_INET),y)
-obj-$(CONFIG_BPF_SYSCALL) += sockmap.o
-endif
 obj-$(CONFIG_BPF_SYSCALL) += offload.o
-endif
 endif
 ifeq ($(CONFIG_PERF_EVENTS),y)
 obj-$(CONFIG_BPF_SYSCALL) += stackmap.o
 endif
 obj-$(CONFIG_CGROUP_BPF) += cgroup.o
+ifeq ($(CONFIG_INET),y)
+obj-$(CONFIG_BPF_SYSCALL) += reuseport_array.o
+endif
+ifeq ($(CONFIG_SYSFS),y)
+obj-$(CONFIG_DEBUG_INFO_BTF) += sysfs_btf.o
+endif

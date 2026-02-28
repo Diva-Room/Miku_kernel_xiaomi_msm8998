@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2018 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -28,6 +28,7 @@
 #include <qdf_nbuf.h>           /* qdf_nbuf_t */
 
 #include <cdp_txrx_cmn.h>      /* ol_txrx_pdev_handle */
+#include <ol_defines.h>
 
 #ifdef CONFIG_HL_SUPPORT
 static inline uint16_t *ol_tx_msdu_id_storage(qdf_nbuf_t msdu)
@@ -146,10 +147,6 @@ void
 ol_tx_completion_handler(ol_txrx_pdev_handle pdev,
 			 int num_msdus,
 			 enum htt_tx_status status, void *msg_word);
-
-void
-ol_tx_offload_deliver_indication_handler(ol_txrx_pdev_handle,
-					 void *msg);
 
 void ol_tx_credit_completion_handler(ol_txrx_pdev_handle pdev, int credits);
 
@@ -367,10 +364,19 @@ void ol_tx_target_credit_update(struct ol_txrx_pdev_t *pdev, int credit_delta);
  * @param num_mpdu_ranges - how many ranges of MPDUs does the message describe.
  *      Each MPDU within the range has the same rx status.
  */
+#ifdef WLAN_PARTIAL_REORDER_OFFLOAD
 void
 ol_rx_indication_handler(ol_txrx_pdev_handle pdev,
 			 qdf_nbuf_t rx_ind_msg,
 			 uint16_t peer_id, uint8_t tid, int num_mpdu_ranges);
+#else
+static inline void
+ol_rx_indication_handler(ol_txrx_pdev_handle pdev,
+			 qdf_nbuf_t rx_ind_msg,
+			 uint16_t peer_id, uint8_t tid, int num_mpdu_ranges)
+{
+}
+#endif
 
 /**
  * @brief Process an rx fragment indication message sent by the target.
@@ -646,7 +652,6 @@ ol_txrx_peer_uapsdmask_get(struct ol_txrx_pdev_t *txrx_pdev, uint16_t peer_id);
 uint8_t
 ol_txrx_peer_qoscapable_get(struct ol_txrx_pdev_t *txrx_pdev, uint16_t peer_id);
 
-#ifndef CONFIG_HL_SUPPORT
 /**
  * @brief Process an rx indication message sent by the target.
  * @details
@@ -667,11 +672,20 @@ ol_txrx_peer_qoscapable_get(struct ol_txrx_pdev_t *txrx_pdev, uint16_t peer_id);
  * @param tid - what (extended) traffic type the rx data is
  * @param is_offload - is this an offload indication?
  */
+#ifdef WLAN_FULL_REORDER_OFFLOAD
 void
 ol_rx_in_order_indication_handler(ol_txrx_pdev_handle pdev,
 				  qdf_nbuf_t rx_ind_msg,
 				  uint16_t peer_id,
 				  uint8_t tid, uint8_t is_offload);
+#else
+static inline void
+ol_rx_in_order_indication_handler(ol_txrx_pdev_handle pdev,
+				  qdf_nbuf_t rx_ind_msg,
+				  uint16_t peer_id,
+				  uint8_t tid, uint8_t is_offload)
+{
+}
 #endif
 
 #ifdef FEATURE_HL_GROUP_CREDIT_FLOW_CONTROL
@@ -692,4 +706,19 @@ ol_tx_get_max_tx_groups_supported(struct ol_txrx_pdev_t *pdev)
 }
 #endif
 
+#if defined(FEATURE_HL_GROUP_CREDIT_FLOW_CONTROL) && \
+	defined(FEATURE_HL_DBS_GROUP_CREDIT_SHARING)
+int ol_txrx_distribute_group_credits(struct ol_txrx_pdev_t *pdev, u8 group_id,
+				     u32 membership_new);
+#else
+static inline int ol_txrx_distribute_group_credits(struct ol_txrx_pdev_t *pdev,
+						   u8 group_id,
+						   u32 membership_new)
+{
+	return 0;
+}
+#endif /*
+	* FEATURE_HL_GROUP_CREDIT_FLOW_CONTROL &&
+	* FEATURE_HL_DBS_GROUP_CREDIT_SHARING
+	*/
 #endif /* _OL_TXRX_HTT_API__H_ */

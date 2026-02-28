@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2018 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -227,6 +227,22 @@ ol_tx_queue_discard(
 }
 #endif /* defined(CONFIG_HL_SUPPORT) */
 
+#if (!defined(QCA_LL_LEGACY_TX_FLOW_CONTROL)) && (!defined(CONFIG_HL_SUPPORT))
+static inline
+void ol_txrx_vdev_flush(struct cdp_vdev *data_vdev)
+{
+}
+#else
+void ol_txrx_vdev_flush(struct cdp_vdev *pvdev);
+#endif
+
+#if defined(QCA_LL_LEGACY_TX_FLOW_CONTROL) || \
+   (defined(QCA_LL_TX_FLOW_CONTROL_V2)) || \
+   defined(CONFIG_HL_SUPPORT)
+void ol_txrx_vdev_pause(struct cdp_vdev *pvdev, uint32_t reason);
+void ol_txrx_vdev_unpause(struct cdp_vdev *pvdev, uint32_t reason);
+#endif /* QCA_LL_LEGACY_TX_FLOW_CONTROL */
+
 #if defined(CONFIG_HL_SUPPORT) && defined(QCA_BAD_PEER_TX_FLOW_CL)
 
 void
@@ -418,17 +434,28 @@ ol_tx_queues_display(struct ol_txrx_pdev_t *pdev)
 #define ol_tx_queue_decs_reinit(peer, peer_id)  /* no-op */
 
 #ifdef QCA_SUPPORT_TX_THROTTLE
+void ol_tx_throttle_set_level(struct cdp_pdev *ppdev, int level);
+void ol_tx_throttle_init_period(struct cdp_pdev *ppdev, int period,
+				uint8_t *dutycycle_level);
+
 /**
  * @brief - initialize the throttle context
  * @param pdev - the physical device object, which stores the txqs
  */
 void ol_tx_throttle_init(struct ol_txrx_pdev_t *pdev);
 #else
-#define ol_tx_throttle_init(pdev)       /*no op */
+static inline void ol_tx_throttle_init(struct ol_txrx_pdev_t *pdev) {}
+
+static inline void ol_tx_throttle_set_level(struct cdp_pdev *ppdev, int level)
+{}
+
+static inline void ol_tx_throttle_init_period(struct cdp_pdev *ppdev,
+					      int period,
+					      uint8_t *dutycycle_level)
+{}
 #endif
 
 #ifdef FEATURE_HL_GROUP_CREDIT_FLOW_CONTROL
-
 static inline bool
 ol_tx_is_txq_last_serviced_queue(struct ol_txrx_pdev_t *pdev,
 				 struct ol_tx_frms_queue_t *txq)
@@ -552,5 +579,37 @@ ol_tx_set_peer_group_ptr(
 {
 }
 #endif
+
+#if defined(FEATURE_HL_GROUP_CREDIT_FLOW_CONTROL) && \
+	defined(FEATURE_HL_DBS_GROUP_CREDIT_SHARING)
+/**
+ * @brief: Update group frame count
+ * @details: This function is used to maintain the count of frames
+ * enqueued in a particular group.
+ *
+ * @param: txq - The txq to which the frame is getting enqueued.
+ * @param: num_frms - Number of frames to be added/removed from the group.
+ */
+void ol_tx_update_grp_frm_count(struct ol_tx_frms_queue_t *txq, int num_frms);
+
+u32 ol_tx_txq_update_borrowed_group_credits(struct ol_txrx_pdev_t *pdev,
+					    struct ol_tx_frms_queue_t *txq,
+					    u32 credits_used);
+#else
+static inline void ol_tx_update_grp_frm_count(struct ol_tx_frms_queue_t *txq,
+					      int num_frms)
+{}
+
+static inline u32
+ol_tx_txq_update_borrowed_group_credits(struct ol_txrx_pdev_t *pdev,
+					struct ol_tx_frms_queue_t *txq,
+					u32 credits_used)
+{
+	return credits_used;
+}
+#endif /*
+	* FEATURE_HL_GROUP_CREDIT_FLOW_CONTROL &&
+	*  FEATURE_HL_DBS_GROUP_CREDIT_SHARING
+	*/
 
 #endif /* _OL_TX_QUEUE__H_ */

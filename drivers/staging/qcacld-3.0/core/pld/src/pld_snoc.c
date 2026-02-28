@@ -27,6 +27,7 @@
 
 #include "pld_internal.h"
 #include "pld_snoc.h"
+#include "osif_psoc_sync.h"
 
 #ifdef CONFIG_PLD_SNOC_ICNSS
 /**
@@ -49,7 +50,7 @@ static int pld_snoc_probe(struct device *dev)
 		goto out;
 	}
 
-	ret = pld_add_dev(pld_context, dev, PLD_BUS_TYPE_SNOC);
+	ret = pld_add_dev(pld_context, dev, NULL, PLD_BUS_TYPE_SNOC);
 	if (ret)
 		goto out;
 
@@ -72,15 +73,28 @@ out:
 static void pld_snoc_remove(struct device *dev)
 {
 	struct pld_context *pld_context;
+	int errno;
+	struct osif_psoc_sync *psoc_sync;
+
+	errno = osif_psoc_sync_trans_start_wait(dev, &psoc_sync);
+	if (errno)
+		return;
+
+	osif_psoc_sync_unregister(dev);
+	osif_psoc_sync_wait_for_ops(psoc_sync);
 
 	pld_context = pld_get_global_context();
 
 	if (!pld_context)
-		return;
+		goto out;
 
 	pld_context->ops->remove(dev, PLD_BUS_TYPE_SNOC);
 
 	pld_del_dev(pld_context, dev);
+
+out:
+	osif_psoc_sync_trans_stop(psoc_sync);
+	osif_psoc_sync_destroy(psoc_sync);
 }
 
 /**
@@ -238,58 +252,30 @@ static int pld_snoc_uevent(struct device *dev,
 		return -EINVAL;
 
 	if (!pld_context->ops->uevent)
-		return 0;
+		goto out;
 
 	if (!uevent)
 		return -EINVAL;
 
 	switch (uevent->uevent) {
 	case ICNSS_UEVENT_FW_CRASHED:
-		data.uevent = PLD_RECOVERY;
+		data.uevent = PLD_FW_CRASHED;
 		break;
 	case ICNSS_UEVENT_FW_DOWN:
-		if (uevent->data == NULL)
+		if (!uevent->data)
 			return -EINVAL;
 		uevent_data = (struct icnss_uevent_fw_down_data *)uevent->data;
 		data.uevent = PLD_FW_DOWN;
 		data.fw_down.crashed = uevent_data->crashed;
 		break;
 	default:
-		return 0;
+		goto out;
 	}
 
 	pld_context->ops->uevent(dev, &data);
+out:
 	return 0;
 }
-
-#if defined(CONFIG_WLAN_FW_THERMAL_MITIGATION)
-/**
- * pld_snoc_set_thermal_state() - Set thermal state for thermal mitigation
- * @dev: device
- * @thermal_state: Thermal state set by thermal subsystem
- *
- * This function will be called when thermal subsystem notifies platform
- * driver about change in thermal state.
- *
- * Return: 0 for success
- * Non zero failure code for errors
- */
-static int pld_snoc_set_thermal_state(struct device *dev,
-				      unsigned long thermal_state)
-{
-	struct pld_context *pld_context;
-
-	pld_context = pld_get_global_context();
-	if (!pld_context)
-		return -EINVAL;
-
-	if (pld_context->ops->set_curr_therm_state)
-		return pld_context->ops->set_curr_therm_state(dev,
-							      thermal_state);
-
-	return -ENOTSUPP;
-}
-#endif
 
 #ifdef MULTI_IF_NAME
 #define PLD_SNOC_OPS_NAME "pld_snoc_" MULTI_IF_NAME
@@ -309,9 +295,6 @@ struct icnss_driver_ops pld_snoc_ops = {
 	.suspend_noirq = pld_snoc_suspend_noirq,
 	.resume_noirq = pld_snoc_resume_noirq,
 	.uevent = pld_snoc_uevent,
-#if defined(CONFIG_WLAN_FW_THERMAL_MITIGATION)
-	.set_therm_state = pld_snoc_set_thermal_state,
-#endif
 };
 
 /**
@@ -412,17 +395,26 @@ int pld_snoc_wlan_disable(struct device *dev, enum pld_driver_mode mode)
  */
 int pld_snoc_get_soc_info(struct device *dev, struct pld_soc_info *info)
 {
-	int ret = 0;
-	struct icnss_soc_info icnss_info;
+	int errno;
+	struct icnss_soc_info icnss_info = {0};
 
-	if (info == NULL || !dev)
+	if (!info || !dev)
 		return -ENODEV;
 
-	ret = icnss_get_soc_info(dev, &icnss_info);
-	if (0 != ret)
-		return ret;
+	errno = icnss_get_soc_info(dev, &icnss_info);
+	if (errno)
+		return errno;
 
-	memcpy(info, &icnss_info, sizeof(*info));
+	info->v_addr = icnss_info.v_addr;
+	info->p_addr = icnss_info.p_addr;
+	info->chip_id = icnss_info.chip_id;
+	info->chip_family = icnss_info.chip_family;
+	info->board_id = icnss_info.board_id;
+	info->soc_id = icnss_info.soc_id;
+	info->fw_version = icnss_info.fw_version;
+	strlcpy(info->fw_build_timestamp, icnss_info.fw_build_timestamp,
+		sizeof(info->fw_build_timestamp));
+
 	return 0;
 }
 #endif

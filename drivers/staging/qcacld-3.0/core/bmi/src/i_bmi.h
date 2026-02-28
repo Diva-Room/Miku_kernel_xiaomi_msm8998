@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2017 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2018 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -23,6 +23,8 @@
 #ifndef _I_BMI_H_
 #define _I_BMI_H_
 
+#include "qdf_types.h"
+#include "qdf_defer.h"
 #include "hif.h"
 #include "bmi_msg.h"
 #include "bmi.h"
@@ -129,6 +131,7 @@ enum ATH_BIN_FILE {
  * @bmi_cmd_da - BMI Command Physical address
  * @bmi_rsp_da - BMI Response Physical address
  * @bmi_done - Flag to check if BMI Phase is complete
+ * @board_id - board ID
  * @fw_files - FW files
  *
  */
@@ -138,6 +141,7 @@ struct bmi_info {
 	dma_addr_t bmi_cmd_da;
 	dma_addr_t bmi_rsp_da;
 	bool bmi_done;
+	uint16_t board_id;
 	struct pld_fw_files fw_files;
 };
 
@@ -194,4 +198,16 @@ void ramdump_work_handler(void *arg);
 void fw_indication_work_handler(void *arg);
 struct ol_config_info *ol_get_ini_handle(struct ol_context *ol_ctx);
 
+#ifdef HIF_SDIO
+QDF_STATUS hif_reg_based_get_target_info(struct hif_opaque_softc *hif_ctx,
+		  struct bmi_target_info *targ_info);
+#endif
+#if defined(HIF_PCI) || defined(HIF_SNOC) || defined(HIF_AHB) || defined(HIF_USB)
+static inline QDF_STATUS
+hif_reg_based_get_target_info(struct hif_opaque_softc *hif_ctx,
+		  struct bmi_target_info *targ_info)
+{
+	return QDF_STATUS_SUCCESS;
+}
+#endif
 #endif

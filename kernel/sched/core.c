@@ -1004,7 +1004,7 @@ static inline unsigned int uclamp_bucket_base_value(unsigned int clamp_value)
 	return UCLAMP_BUCKET_DELTA * uclamp_bucket_id(clamp_value);
 }
 
-static inline enum uclamp_id uclamp_none(enum uclamp_id clamp_id)
+static inline unsigned long uclamp_none(enum uclamp_id clamp_id)
 {
 	if (clamp_id == UCLAMP_MIN)
 		return 0;
@@ -1019,9 +1019,9 @@ static inline void uclamp_se_set(struct uclamp_se *uc_se,
 	uc_se->user_defined = user_defined;
 }
 
-static inline unsigned int
+static inline unsigned long
 uclamp_idle_value(struct rq *rq, enum uclamp_id clamp_id,
-		  unsigned int clamp_value)
+		  unsigned long clamp_value)
 {
 	/*
 	 * Avoid blocked utilization pushing up the frequency when we go
@@ -1037,7 +1037,7 @@ uclamp_idle_value(struct rq *rq, enum uclamp_id clamp_id,
 }
 
 static inline void uclamp_idle_reset(struct rq *rq, enum uclamp_id clamp_id,
-				     unsigned int clamp_value)
+				     unsigned long clamp_value)
 {
 	/* Reset max-clamp retention only on idle exit */
 	if (!(rq->uclamp_flags & UCLAMP_FLAG_IDLE))
@@ -1047,8 +1047,8 @@ static inline void uclamp_idle_reset(struct rq *rq, enum uclamp_id clamp_id,
 }
 
 static inline
-enum uclamp_id uclamp_rq_max_value(struct rq *rq, enum uclamp_id clamp_id,
-				   unsigned int clamp_value)
+unsigned long uclamp_rq_max_value(struct rq *rq, enum uclamp_id clamp_id,
+				   unsigned long clamp_value)
 {
 	struct uclamp_bucket *bucket = rq->uclamp[clamp_id].bucket;
 	int bucket_id = UCLAMP_BUCKETS - 1;
@@ -1128,9 +1128,10 @@ static void uclamp_sync_util_min_rt_default(void)
 static inline struct uclamp_se
 uclamp_tg_restrict(struct task_struct *p, enum uclamp_id clamp_id)
 {
+	/* Copy by value as we could modify it */
 	struct uclamp_se uc_req = p->uclamp_req[clamp_id];
 #ifdef CONFIG_UCLAMP_TASK_GROUP
-	struct uclamp_se uc_max;
+	unsigned int tg_min, tg_max, value;
 
 	/*
 	 * Tasks in autogroups or root task group will be
@@ -1141,9 +1142,11 @@ uclamp_tg_restrict(struct task_struct *p, enum uclamp_id clamp_id)
 	if (task_group(p) == &root_task_group)
 		return uc_req;
 
-	uc_max = task_group(p)->uclamp[clamp_id];
-	if (uc_req.value > uc_max.value || !uc_req.user_defined)
-		return uc_max;
+	tg_min = task_group(p)->uclamp[UCLAMP_MIN].value;
+	tg_max = task_group(p)->uclamp[UCLAMP_MAX].value;
+	value = uc_req.value;
+	value = clamp(value, tg_min, tg_max);
+	uclamp_se_set(&uc_req, value, false);
 #endif
 
 	return uc_req;
@@ -1341,9 +1344,27 @@ static inline void uclamp_rq_dec(struct rq *rq, struct task_struct *p)
 		uclamp_rq_dec_id(rq, p, clamp_id);
 }
 
-static inline void
-uclamp_update_active(struct task_struct *p, enum uclamp_id clamp_id)
+static inline void uclamp_rq_reinc_id(struct rq *rq, struct task_struct *p,
+				      enum uclamp_id clamp_id)
 {
+	if (!p->uclamp[clamp_id].active)
+		return;
+
+	uclamp_rq_dec_id(rq, p, clamp_id);
+	uclamp_rq_inc_id(rq, p, clamp_id);
+
+	/*
+	 * Make sure to clear the idle flag if we've transiently reached 0
+	 * active tasks on rq.
+	 */
+	if (clamp_id == UCLAMP_MAX && (rq->uclamp_flags & UCLAMP_FLAG_IDLE))
+		rq->uclamp_flags &= ~UCLAMP_FLAG_IDLE;
+}
+
+static inline void
+uclamp_update_active(struct task_struct *p)
+{
+	enum uclamp_id clamp_id;
 	struct rq_flags rf;
 	struct rq *rq;
 
@@ -1363,30 +1384,22 @@ uclamp_update_active(struct task_struct *p, enum uclamp_id clamp_id)
 	 * affecting a valid clamp bucket, the next time it's enqueued,
 	 * it will already see the updated clamp bucket value.
 	 */
-	if (!p->uclamp[clamp_id].active) {
-		uclamp_rq_dec_id(rq, p, clamp_id);
-		uclamp_rq_inc_id(rq, p, clamp_id);
-	}
+	for_each_clamp_id(clamp_id)
+		uclamp_rq_reinc_id(rq, p, clamp_id);
 
 	task_rq_unlock(rq, p, &rf);
 }
 
 #ifdef CONFIG_UCLAMP_TASK_GROUP
 static inline void
-uclamp_update_active_tasks(struct cgroup_subsys_state *css,
-			   unsigned int clamps)
+uclamp_update_active_tasks(struct cgroup_subsys_state *css)
 {
-	enum uclamp_id clamp_id;
 	struct css_task_iter it;
 	struct task_struct *p;
 
 	css_task_iter_start(css, 0, &it);
-	while ((p = css_task_iter_next(&it))) {
-		for_each_clamp_id(clamp_id) {
-			if ((0x1 << clamp_id) & clamps)
-				uclamp_update_active(p, clamp_id);
-		}
-	}
+	while ((p = css_task_iter_next(&it)))
+		uclamp_update_active(p);
 	css_task_iter_end(&it);
 }
 
@@ -1579,7 +1592,7 @@ static void __init init_uclamp_rq(struct rq *rq)
 		};
 	}
 
-	rq->uclamp_flags = 0;
+	rq->uclamp_flags = UCLAMP_FLAG_IDLE;
 }
 
 static void __init init_uclamp(void)
@@ -5896,6 +5909,57 @@ out_put_task:
 	return retval;
 }
 
+char sched_lib_name[LIB_PATH_LENGTH];
+unsigned int sched_lib_mask_force;
+bool is_sched_lib_based_app(pid_t pid)
+{
+	const char *name = NULL;
+	struct vm_area_struct *vma;
+	char path_buf[LIB_PATH_LENGTH];
+	bool found = false;
+	struct task_struct *p;
+
+	if (strnlen(sched_lib_name, LIB_PATH_LENGTH) == 0)
+		return false;
+
+	rcu_read_lock();
+
+	p = find_process_by_pid(pid);
+	if (!p) {
+		rcu_read_unlock();
+		return false;
+	}
+
+	/* Prevent p going away */
+	get_task_struct(p);
+	rcu_read_unlock();
+
+	if (!p->mm)
+		goto put_task_struct;
+
+	down_read(&p->mm->mmap_sem);
+	for (vma = p->mm->mmap; vma ; vma = vma->vm_next) {
+		if (vma->vm_file && vma->vm_flags & VM_EXEC) {
+			name = d_path(&vma->vm_file->f_path,
+					path_buf, LIB_PATH_LENGTH);
+			if (IS_ERR(name))
+				goto release_sem;
+
+			if (strnstr(name, sched_lib_name,
+					strnlen(name, LIB_PATH_LENGTH))) {
+				found = true;
+				break;
+			}
+		}
+	}
+
+release_sem:
+	up_read(&p->mm->mmap_sem);
+put_task_struct:
+	put_task_struct(p);
+	return found;
+}
+
 static int get_user_cpu_mask(unsigned long __user *user_mask_ptr, unsigned len,
 			     struct cpumask *new_mask)
 {
@@ -9666,6 +9730,34 @@ void ___might_sleep(const char *file, int line, int preempt_offset)
 	dump_stack();
 }
 EXPORT_SYMBOL(___might_sleep);
+
+void __cant_sleep(const char *file, int line, int preempt_offset)
+{
+	static unsigned long prev_jiffy;
+
+	if (irqs_disabled())
+		return;
+
+	if (!IS_ENABLED(CONFIG_PREEMPT_COUNT))
+		return;
+
+	if (preempt_count() > preempt_offset)
+		return;
+
+	if (time_before(jiffies, prev_jiffy + HZ) && prev_jiffy)
+		return;
+	prev_jiffy = jiffies;
+
+	printk(KERN_ERR "BUG: assuming atomic context at %s:%d\n", file, line);
+	printk(KERN_ERR "in_atomic(): %d, irqs_disabled(): %d, pid: %d, name: %s\n",
+			in_atomic(), irqs_disabled(),
+			current->pid, current->comm);
+
+	debug_show_held_locks(current);
+	dump_stack();
+	add_taint(TAINT_WARN, LOCKDEP_STILL_OK);
+}
+EXPORT_SYMBOL_GPL(__cant_sleep);
 #endif
 
 #ifdef CONFIG_MAGIC_SYSRQ
@@ -10313,6 +10405,16 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
 
 	if (parent)
 		sched_online_group(tg, parent);
+
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+	/* Propagate the effective uclamp value for the new group */
+	mutex_lock(&uclamp_mutex);
+	rcu_read_lock();
+	cpu_util_update_eff(css);
+	rcu_read_unlock();
+	mutex_unlock(&uclamp_mutex);
+#endif
+
 	return 0;
 }
 
@@ -10400,6 +10502,9 @@ static void cpu_util_update_eff(struct cgroup_subsys_state *css)
 	enum uclamp_id clamp_id;
 	unsigned int clamps;
 
+	lockdep_assert_held(&uclamp_mutex);
+	SCHED_WARN_ON(!rcu_read_lock_held());
+
 	css_for_each_descendant_pre(css, top_css) {
 		uc_parent = css_tg(css)->parent
 			? css_tg(css)->parent->uclamp : NULL;
@@ -10432,7 +10537,7 @@ static void cpu_util_update_eff(struct cgroup_subsys_state *css)
 		}
 
 		/* Immediately update descendants RUNNABLE tasks */
-		uclamp_update_active_tasks(css, clamps);
+		uclamp_update_active_tasks(css);
 	}
 }
 
@@ -10582,72 +10687,6 @@ static u64 cpu_uclamp_ls_read_u64(struct cgroup_subsys_state *css,
 	struct task_group *tg = css_tg(css);
 
 	return (u64) tg->latency_sensitive;
-}
-
-static int cpu_uclamp_boost_write_u64(struct cgroup_subsys_state *css,
-				   struct cftype *cftype, u64 boosted)
-{
-	struct task_group *tg;
-
-	if (boosted > 1)
-		return -EINVAL;
-	tg = css_tg(css);
-	tg->boosted = (unsigned int) boosted;
-
-	return 0;
-}
-
-static u64 cpu_uclamp_boost_read_u64(struct cgroup_subsys_state *css,
-				  struct cftype *cft)
-{
-	struct task_group *tg = css_tg(css);
-
-	return (u64) tg->boosted;
-}
-
-/* Wrappers for the above {read, write, show} functions */
-int cpu_uclamp_min_show_wrapper(struct seq_file *sf, void *v)
-{
-	return cpu_uclamp_min_show(sf, v);
-}
-int cpu_uclamp_max_show_wrapper(struct seq_file *sf, void *v)
-{
-	return cpu_uclamp_max_show(sf, v);
-}
-
-ssize_t cpu_uclamp_min_write_wrapper(struct kernfs_open_file *of,
-                               char *buf, size_t nbytes,
-                               loff_t off)
-{
-	return cpu_uclamp_min_write(of, buf, nbytes, off);
-}
-ssize_t cpu_uclamp_max_write_wrapper(struct kernfs_open_file *of,
-                               char *buf, size_t nbytes,
-                               loff_t off)
-{
-	return cpu_uclamp_max_write(of, buf, nbytes, off);
-}
-
-int cpu_uclamp_ls_write_u64_wrapper(struct cgroup_subsys_state *css,
-                              struct cftype *cftype, u64 ls)
-{
-	return cpu_uclamp_ls_write_u64(css, cftype, ls);
-}
-u64 cpu_uclamp_ls_read_u64_wrapper(struct cgroup_subsys_state *css,
-                             struct cftype *cft)
-{
-	return cpu_uclamp_ls_read_u64(css, cft);
-}
-
-int cpu_uclamp_boost_write_u64_wrapper(struct cgroup_subsys_state *css,
-                              struct cftype *cftype, u64 boost)
-{
-	return cpu_uclamp_boost_write_u64(css, cftype, boost);
-}
-u64 cpu_uclamp_boost_read_u64_wrapper(struct cgroup_subsys_state *css,
-                             struct cftype *cft)
-{
-	return cpu_uclamp_boost_read_u64(css, cft);
 }
 #endif /* CONFIG_UCLAMP_TASK_GROUP */
 
@@ -10983,6 +11022,26 @@ static struct cftype cpu_files[] = {
 		.name = "rt_period_us",
 		.read_u64 = cpu_rt_period_read_uint,
 		.write_u64 = cpu_rt_period_write_uint,
+	},
+#endif
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+	{
+		.name = "uclamp.min",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_uclamp_min_show,
+		.write = cpu_uclamp_min_write,
+	},
+	{
+		.name = "uclamp.max",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_uclamp_max_show,
+		.write = cpu_uclamp_max_write,
+	},
+	{
+		.name = "uclamp.latency_sensitive",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_uclamp_ls_read_u64,
+		.write_u64 = cpu_uclamp_ls_write_u64,
 	},
 #endif
 	{ }	/* terminate */

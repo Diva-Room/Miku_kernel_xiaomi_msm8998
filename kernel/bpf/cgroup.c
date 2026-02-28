@@ -71,8 +71,7 @@ static u32 prog_list_length(struct list_head *head)
  * if parent has overridable or multi-prog, allow attaching
  */
 static bool hierarchy_allows_attach(struct cgroup *cgrp,
-				    enum bpf_attach_type type,
-				    u32 new_flags)
+				    enum bpf_attach_type type)
 {
 	struct cgroup *p;
 
@@ -233,31 +232,35 @@ cleanup:
  *                         propagate the change to descendants
  * @cgrp: The cgroup which descendants to traverse
  * @prog: A program to attach
+ * @replace_prog: Previously attached program to replace if BPF_F_REPLACE is set
  * @type: Type of attach operation
+ * @flags: Option flags
  *
  * Must be called with cgroup_mutex held.
  */
 int __cgroup_bpf_attach(struct cgroup *cgrp, struct bpf_prog *prog,
+			struct bpf_prog *replace_prog,
 			enum bpf_attach_type type, u32 flags)
 {
+	u32 saved_flags = (flags & (BPF_F_ALLOW_OVERRIDE | BPF_F_ALLOW_MULTI));
 	struct list_head *progs = &cgrp->bpf.progs[type];
 	struct bpf_prog *old_prog = NULL;
-	struct bpf_cgroup_storage *storage[MAX_BPF_CGROUP_STORAGE_TYPE],
- 		*old_storage[MAX_BPF_CGROUP_STORAGE_TYPE] = {NULL};
+	struct bpf_cgroup_storage *storage[MAX_BPF_CGROUP_STORAGE_TYPE] = {};
+	struct bpf_cgroup_storage *old_storage[MAX_BPF_CGROUP_STORAGE_TYPE] = {};
+	struct bpf_prog_list *pl, *replace_pl = NULL;
  	enum bpf_cgroup_storage_type stype;
-	struct bpf_prog_list *pl;
-	bool pl_was_allocated;
 	u32 old_flags;
 	int err;
 
-	if ((flags & BPF_F_ALLOW_OVERRIDE) && (flags & BPF_F_ALLOW_MULTI))
+	if (((flags & BPF_F_ALLOW_OVERRIDE) && (flags & BPF_F_ALLOW_MULTI)) ||
+	    ((flags & BPF_F_REPLACE) && !(flags & BPF_F_ALLOW_MULTI)))
 		/* invalid combination */
 		return -EINVAL;
 
-	if (!hierarchy_allows_attach(cgrp, type, flags))
+	if (!hierarchy_allows_attach(cgrp, type))
 		return -EPERM;
 
-	if (!list_empty(progs) && cgrp->bpf.flags[type] != flags)
+	if (!list_empty(progs) && cgrp->bpf.flags[type] != saved_flags)
 		/* Disallow attaching non-overridable on top
 		 * of existing overridable in this cgroup.
 		 * Disallow attaching multi-prog if overridable or none
@@ -266,6 +269,21 @@ int __cgroup_bpf_attach(struct cgroup *cgrp, struct bpf_prog *prog,
 
 	if (prog_list_length(progs) >= BPF_CGROUP_MAX_PROGS)
 		return -E2BIG;
+
+	if (flags & BPF_F_ALLOW_MULTI) {
+		list_for_each_entry(pl, progs, node) {
+			if (pl->prog == prog)
+				/* disallow attaching the same prog twice */
+				return -EINVAL;
+			if (pl->prog == replace_prog)
+				replace_pl = pl;
+		}
+		if ((flags & BPF_F_REPLACE) && !replace_pl)
+			/* prog to replace not found for cgroup */
+			return -ENOENT;
+	} else if (!list_empty(progs)) {
+		replace_pl = list_first_entry(progs, typeof(*pl), node);
+	}
 
 	for_each_cgroup_storage_type(stype) {
  		storage[stype] = bpf_cgroup_storage_alloc(prog, stype);
@@ -277,54 +295,29 @@ int __cgroup_bpf_attach(struct cgroup *cgrp, struct bpf_prog *prog,
  		}
  	}
 
-	if (flags & BPF_F_ALLOW_MULTI) {
-		list_for_each_entry(pl, progs, node) {
-			if (pl->prog == prog) {
-				/* disallow attaching the same prog twice */
-				for_each_cgroup_storage_type(stype)
- 					bpf_cgroup_storage_free(storage[stype]);
-				return -EINVAL;
-			}
+	if (replace_pl) {
+		pl = replace_pl;
+		old_prog = pl->prog;
+		for_each_cgroup_storage_type(stype) {
+			old_storage[stype] = pl->storage[stype];
+			bpf_cgroup_storage_unlink(old_storage[stype]);
 		}
-
+	} else {
 		pl = kmalloc(sizeof(*pl), GFP_KERNEL);
 		if (!pl) {
 			for_each_cgroup_storage_type(stype)
  				bpf_cgroup_storage_free(storage[stype]);
 			return -ENOMEM;
 		}
-
-		pl_was_allocated = true;
-		pl->prog = prog;
-		for_each_cgroup_storage_type(stype)
- 			pl->storage[stype] = storage[stype];
 		list_add_tail(&pl->node, progs);
-	} else {
-		if (list_empty(progs)) {
-			pl = kmalloc(sizeof(*pl), GFP_KERNEL);
-			if (!pl) {
-				for_each_cgroup_storage_type(stype)
- 					bpf_cgroup_storage_free(storage[stype]);
-				return -ENOMEM;
-			}
-			pl_was_allocated = true;
-			list_add_tail(&pl->node, progs);
-		} else {
-			pl = list_first_entry(progs, typeof(*pl), node);
-			old_prog = pl->prog;
-			for_each_cgroup_storage_type(stype) {
- 				old_storage[stype] = pl->storage[stype];
- 				bpf_cgroup_storage_unlink(old_storage[stype]);
- 			}
-			pl_was_allocated = false;
-		}
-		pl->prog = prog;
-		for_each_cgroup_storage_type(stype)
- 			pl->storage[stype] = storage[stype];
 	}
 
+	pl->prog = prog;
+	for_each_cgroup_storage_type(stype)
+		pl->storage[stype] = storage[stype];
+
 	old_flags = cgrp->bpf.flags[type];
-	cgrp->bpf.flags[type] = flags;
+	cgrp->bpf.flags[type] = saved_flags;
 
 	err = update_effective_progs(cgrp, type);
 	if (err)
@@ -352,7 +345,7 @@ cleanup:
  		pl->storage[stype] = old_storage[stype];
  		bpf_cgroup_storage_link(old_storage[stype], cgrp, type);
  	}
-	if (pl_was_allocated) {
+	if (!replace_pl) {
 		list_del(&pl->node);
 		kfree(pl);
 	}
@@ -369,7 +362,7 @@ cleanup:
  * Must be called with cgroup_mutex held.
  */
 int __cgroup_bpf_detach(struct cgroup *cgrp, struct bpf_prog *prog,
-			enum bpf_attach_type type, u32 unused_flags)
+			enum bpf_attach_type type)
 {
 	struct list_head *progs = &cgrp->bpf.progs[type];
 	enum bpf_cgroup_storage_type stype;
@@ -487,6 +480,7 @@ int __cgroup_bpf_query(struct cgroup *cgrp, const union bpf_attr *attr,
 int cgroup_bpf_prog_attach(const union bpf_attr *attr,
 			   enum bpf_prog_type ptype, struct bpf_prog *prog)
 {
+	struct bpf_prog *replace_prog = NULL;
 	struct cgroup *cgrp;
 	int ret;
 
@@ -494,8 +488,20 @@ int cgroup_bpf_prog_attach(const union bpf_attr *attr,
 	if (IS_ERR(cgrp))
 		return PTR_ERR(cgrp);
 
-	ret = cgroup_bpf_attach(cgrp, prog, attr->attach_type,
+	if ((attr->attach_flags & BPF_F_ALLOW_MULTI) &&
+	    (attr->attach_flags & BPF_F_REPLACE)) {
+		replace_prog = bpf_prog_get_type(attr->replace_bpf_fd, ptype);
+		if (IS_ERR(replace_prog)) {
+			cgroup_put(cgrp);
+			return PTR_ERR(replace_prog);
+		}
+	}
+
+	ret = cgroup_bpf_attach(cgrp, prog, replace_prog, attr->attach_type,
 				attr->attach_flags);
+
+	if (replace_prog)
+		bpf_prog_put(replace_prog);
 	cgroup_put(cgrp);
 	return ret;
 }
@@ -1266,12 +1272,12 @@ static bool sysctl_is_valid_access(int off, int size, enum bpf_access_type type,
 		return false;
 
 	switch (off) {
-	case offsetof(struct bpf_sysctl, write):
+	case bpf_ctx_range(struct bpf_sysctl, write):
 		if (type != BPF_READ)
 			return false;
 		bpf_ctx_record_field_size(info, size_default);
 		return bpf_ctx_narrow_access_ok(off, size, size_default);
-	case offsetof(struct bpf_sysctl, file_pos):
+	case bpf_ctx_range(struct bpf_sysctl, file_pos):
 		if (type == BPF_READ) {
 			bpf_ctx_record_field_size(info, size_default);
 			return bpf_ctx_narrow_access_ok(off, size, size_default);
@@ -1289,6 +1295,7 @@ static u32 sysctl_convert_ctx_access(enum bpf_access_type type,
 				     struct bpf_prog *prog, u32 *target_size)
 {
 	struct bpf_insn *insn = insn_buf;
+	u32 read_size;
 
 	switch (si->off) {
 	case offsetof(struct bpf_sysctl, write):
@@ -1320,7 +1327,9 @@ static u32 sysctl_convert_ctx_access(enum bpf_access_type type,
 				treg, si->dst_reg,
 				offsetof(struct bpf_sysctl_kern, ppos));
 			*insn++ = BPF_STX_MEM(
-				BPF_SIZEOF(u32), treg, si->src_reg, 0);
+				BPF_SIZEOF(u32), treg, si->src_reg,
+				bpf_ctx_narrow_access_offset(
+					0, sizeof(u32), sizeof(loff_t)));
 			*insn++ = BPF_LDX_MEM(
 				BPF_DW, treg, si->dst_reg,
 				offsetof(struct bpf_sysctl_kern, tmp_reg));
@@ -1329,8 +1338,11 @@ static u32 sysctl_convert_ctx_access(enum bpf_access_type type,
 				BPF_FIELD_SIZEOF(struct bpf_sysctl_kern, ppos),
 				si->dst_reg, si->src_reg,
 				offsetof(struct bpf_sysctl_kern, ppos));
+			read_size = bpf_size_to_bytes(BPF_SIZE(si->code));
 			*insn++ = BPF_LDX_MEM(
-				BPF_SIZE(si->code), si->dst_reg, si->dst_reg, 0);
+				BPF_SIZE(si->code), si->dst_reg, si->dst_reg,
+				bpf_ctx_narrow_access_offset(
+					0, read_size, sizeof(loff_t)));
 		}
 		*target_size = sizeof(u32);
 		break;

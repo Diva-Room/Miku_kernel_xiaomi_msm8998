@@ -33,6 +33,8 @@
 #ifdef CONFIG_SMP
 #include <linux/sched.h>
 #endif
+#include <linux/sched/sysctl.h>
+
 #include <trace/events/power.h>
 
 static LIST_HEAD(cpufreq_policy_list);
@@ -721,10 +723,34 @@ static ssize_t show_##file_name				\
 }
 
 show_one(cpuinfo_min_freq, cpuinfo.min_freq);
-show_one(cpuinfo_max_freq, cpuinfo.max_freq);
 show_one(cpuinfo_transition_latency, cpuinfo.transition_latency);
 show_one(scaling_min_freq, min);
 show_one(scaling_max_freq, max);
+
+unsigned int cpuinfo_max_freq_cached;
+
+static bool should_use_cached_freq(int cpu)
+{
+	if (!cpuinfo_max_freq_cached)
+		return false;
+
+	if (!(BIT(cpu) & sched_lib_mask_force))
+		return false;
+
+	return is_sched_lib_based_app(current->pid);
+}
+
+static ssize_t show_cpuinfo_max_freq(struct cpufreq_policy *policy, char *buf)
+{
+	unsigned int freq = policy->cpuinfo.max_freq;
+
+	if (should_use_cached_freq(policy->cpu))
+		freq = cpuinfo_max_freq_cached << 1;
+	else
+		freq = policy->cpuinfo.max_freq;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", freq);
+}
 
 static ssize_t show_scaling_cur_freq(struct cpufreq_policy *policy, char *buf)
 {
@@ -2481,8 +2507,10 @@ int cpufreq_boost_trigger_state(int state)
 	unsigned long flags;
 	int ret = 0;
 
-	if (cpufreq_driver->boost_enabled == state)
-		return 0;
+	/*
+	 * Don't compare 'cpufreq_driver->boost_enabled' with 'state' here to
+	 * make sure all policies are in sync with global boost flag.
+	 */
 
 	write_lock_irqsave(&cpufreq_driver_lock, flags);
 	cpufreq_driver->boost_enabled = state;

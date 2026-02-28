@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2017 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2018 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -35,15 +35,12 @@
  *
  * Return: TX_SUCCESS or TX_TIMER_ERROR
  */
-uint32_t lim_create_timers_host_roam(tpAniSirGlobal mac_ctx)
+uint32_t lim_create_timers_host_roam(struct mac_context *mac_ctx)
 {
 	uint32_t cfg_value;
 
-	if (wlan_cfg_get_int(mac_ctx, WNI_CFG_REASSOCIATION_FAILURE_TIMEOUT,
-			     &cfg_value) != eSIR_SUCCESS)
-		pe_warn("could not retrieve ReassocFailureTimeout value");
-
-	cfg_value = SYS_MS_TO_TICKS(cfg_value);
+	cfg_value = SYS_MS_TO_TICKS(
+			mac_ctx->mlme_cfg->timeouts.reassoc_failure_timeout);
 	/* Create Association failure timer and activate it later */
 	if (tx_timer_create(mac_ctx,
 			&mac_ctx->lim.limTimers.gLimReassocFailureTimer,
@@ -69,7 +66,7 @@ err_roam_timer:
 	return TX_TIMER_ERROR;
 }
 
-void lim_delete_timers_host_roam(tpAniSirGlobal mac_ctx)
+void lim_delete_timers_host_roam(struct mac_context *mac_ctx)
 {
 	tLimTimers *lim_timer = &mac_ctx->lim.limTimers;
 
@@ -79,7 +76,7 @@ void lim_delete_timers_host_roam(tpAniSirGlobal mac_ctx)
 	tx_timer_delete(&lim_timer->gLimFTPreAuthRspTimer);
 }
 
-void lim_deactivate_timers_host_roam(tpAniSirGlobal mac_ctx)
+void lim_deactivate_timers_host_roam(struct mac_context *mac_ctx)
 {
 	tLimTimers *lim_timer = &mac_ctx->lim.limTimers;
 
@@ -88,7 +85,6 @@ void lim_deactivate_timers_host_roam(tpAniSirGlobal mac_ctx)
 	/* Deactivate FT Preauth response timer */
 	tx_timer_deactivate(&lim_timer->gLimFTPreAuthRspTimer);
 }
-
 
 /**
  * lim_deactivate_and_change_timer_host_roam() - Change timers in host roaming
@@ -100,7 +96,7 @@ void lim_deactivate_timers_host_roam(tpAniSirGlobal mac_ctx)
  *
  * Return: None
  */
-void lim_deactivate_and_change_timer_host_roam(tpAniSirGlobal mac_ctx,
+void lim_deactivate_and_change_timer_host_roam(struct mac_context *mac_ctx,
 		uint32_t timer_id)
 {
 	uint32_t val = 0;
@@ -112,12 +108,8 @@ void lim_deactivate_and_change_timer_host_roam(tpAniSirGlobal mac_ctx,
 				TX_SUCCESS)
 			pe_warn("unable to deactivate Reassoc fail timer");
 
-		if (wlan_cfg_get_int(mac_ctx,
-				WNI_CFG_REASSOCIATION_FAILURE_TIMEOUT,
-				&val) != eSIR_SUCCESS)
-			pe_warn("could not get ReassocFailureTimeout val");
-
-		val = SYS_MS_TO_TICKS(val);
+		val = SYS_MS_TO_TICKS(
+			mac_ctx->mlme_cfg->timeouts.reassoc_failure_timeout);
 		if (tx_timer_change
 			(&mac_ctx->lim.limTimers.gLimReassocFailureTimer, val,
 			 0) != TX_SUCCESS)

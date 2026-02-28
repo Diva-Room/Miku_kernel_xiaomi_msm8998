@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2017 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2017, 2019 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -20,6 +20,8 @@
 #define __WLAN_HDD_DRIVER_OPS_H__
 
 #include "hif.h"
+
+struct hdd_context;
 
 /**
  * DOC: wlan_hdd_driver_ops.h
@@ -51,14 +53,13 @@ void wlan_hdd_unregister_driver(void);
 
 /**
  * wlan_hdd_bus_suspend() - suspend the wlan bus
- * @state: power management state
  *
  * This function is called by the platform driver to suspend the
  * wlan bus
  *
  * Return: 0 on success, negative errno on error
  */
-int wlan_hdd_bus_suspend(pm_message_t state);
+int wlan_hdd_bus_suspend(void);
 
 /**
  * wlan_hdd_bus_suspend_noirq() - handle .suspend_noirq callback
@@ -95,11 +96,12 @@ int wlan_hdd_bus_resume_noirq(void);
 
 /**
  * hdd_hif_close() - HIF close helper
+ * @hdd_ctx: HDD context
  * @hif_ctx: HIF context
  *
  * Helper function to close HIF
  */
-void hdd_hif_close(void *hif_ctx);
+void hdd_hif_close(struct hdd_context *hdd_ctx, void *hif_ctx);
 
 /**
  * hdd_hif_open() - HIF open helper
@@ -115,5 +117,24 @@ void hdd_hif_close(void *hif_ctx);
  */
 int hdd_hif_open(struct device *dev, void *bdev, const struct hif_bus_id *bid,
 		 enum qdf_bus_type bus_type, bool reinit);
+
+/**
+ * hdd_soc_idle_restart_lock() - Takes wakelock for idle restart
+ * @dev: wlan device structure
+ *
+ * This function takes wakelock to prevent suspend during idle restart
+ *
+ * Return: 0 for success and non zero for error
+ */
+int hdd_soc_idle_restart_lock(struct device *dev);
+
+/**
+ * hdd_soc_idle_restart_unlock() - Releases wakelock for idle restart
+ *
+ * This function releases wakelock to allow suspend after idle restart
+ *
+ * Return: none
+ */
+void hdd_soc_idle_restart_unlock(void);
 
 #endif /* __WLAN_HDD_DRIVER_OPS_H__ */

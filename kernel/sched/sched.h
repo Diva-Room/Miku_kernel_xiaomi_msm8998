@@ -297,8 +297,6 @@ struct task_group {
 	struct uclamp_se	uclamp[UCLAMP_CNT];
 	/* Latency-sensitive flag used for a task group */
 	unsigned int		latency_sensitive;
-	/* Boosted flag for a task group */
-	unsigned int 		boosted;
 #endif
 
 };
@@ -2958,20 +2956,27 @@ static __always_inline
 unsigned long uclamp_util_with(struct rq *rq, unsigned long util,
 			       struct task_struct *p)
 {
-	unsigned long min_util;
-	unsigned long max_util;
+	unsigned long min_util = 0;
+	unsigned long max_util = 0;
 
 	if (!static_branch_likely(&sched_uclamp_used))
 		return util;
 
-	min_util = READ_ONCE(rq->uclamp[UCLAMP_MIN].value);
-	max_util = READ_ONCE(rq->uclamp[UCLAMP_MAX].value);
-
 	if (p) {
-		min_util = max(min_util, uclamp_eff_value(p, UCLAMP_MIN));
-		max_util = max(max_util, uclamp_eff_value(p, UCLAMP_MAX));
+		min_util = uclamp_eff_value(p, UCLAMP_MIN);
+		max_util = uclamp_eff_value(p, UCLAMP_MAX);
+
+		/*
+		 * Ignore last runnable task's max clamp, as this task will
+		 * reset it. Similarly, no need to read the rq's min clamp.
+		 */
+		if (rq->uclamp_flags & UCLAMP_FLAG_IDLE)
+			goto out;
 	}
 
+	min_util = max_t(unsigned long, min_util, READ_ONCE(rq->uclamp[UCLAMP_MIN].value));
+	max_util = max_t(unsigned long, max_util, READ_ONCE(rq->uclamp[UCLAMP_MAX].value));
+out:
 	/*
 	 * Since CPU's {min,max}_util clamps are MAX aggregated considering
 	 * RUNNABLE tasks with _different_ clamps, we can end up with an
@@ -2995,6 +3000,11 @@ static inline bool uclamp_is_used(void)
 {
 	return static_branch_likely(&sched_uclamp_used);
 }
+
+static inline bool uclamp_boosted(struct task_struct *p)
+{
+	return uclamp_eff_value(p, UCLAMP_MIN) > 0;
+}
 #else /* CONFIG_UCLAMP_TASK */
 static inline unsigned long uclamp_util_with(struct rq *rq, unsigned long util,
 					     struct task_struct *p)
@@ -3011,42 +3021,17 @@ static inline bool uclamp_is_used(void)
 #ifdef CONFIG_UCLAMP_TASK_GROUP
 static inline bool uclamp_latency_sensitive(struct task_struct *p)
 {
-	struct cgroup_subsys_state *css = task_css(p, cpuset_cgrp_id);
+	struct cgroup_subsys_state *css = task_css(p, cpu_cgrp_id);
 	struct task_group *tg;
 
 	if (!css)
 		return false;
-
-	if (!strlen(css->cgroup->kn->name))
-		return 0;
-
 	tg = container_of(css, struct task_group, css);
 
 	return tg->latency_sensitive;
 }
-
-static inline bool uclamp_boosted(struct task_struct *p)
-{
-	struct cgroup_subsys_state *css = task_css(p, cpuset_cgrp_id);
-	struct task_group *tg;
-
-	if (!css)
-		return false;
-
-	if (!strlen(css->cgroup->kn->name))
-		return 0;
-
-	tg = container_of(css, struct task_group, css);
-
-	return tg->boosted;
-}
 #else
 static inline bool uclamp_latency_sensitive(struct task_struct *p)
-{
-	return false;
-}
-
-static inline bool uclamp_boosted(struct task_struct *p)
 {
 	return false;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2019 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -30,12 +30,8 @@
 #if defined(HIF_USB)
 #include "regtable_usb.h"
 #endif
-#if  defined(CONFIG_CNSS)
-#include <net/cnss.h>
-#endif
 #include "i_bmi.h"
 #include "cds_api.h"
-#include "cds_concurrency.h"
 
 #ifdef CONFIG_DISABLE_SLEEP_BMI_OPTION
 static inline void ol_sdio_disable_sleep(struct ol_context *ol_ctx)
@@ -63,7 +59,7 @@ static inline void ol_sdio_disable_sleep(struct ol_context *ol_ctx)
 #endif
 
 /**
- * ol_usb_extra_initialization() - USB extra initilization
+ * ol_usb_extra_initialization() - USB extra initialization
  * @ol_ctx: pointer to ol_context
  *
  * USB specific initialization after firmware download
@@ -104,9 +100,9 @@ QDF_STATUS ol_sdio_extra_initialization(struct ol_context *ol_ctx)
 
 	/* get the block sizes */
 	status = hif_get_config_item(scn,
-				HIF_DEVICE_GET_MBOX_BLOCK_SIZE,
+				HIF_DEVICE_GET_BLOCK_SIZE,
 				blocksizes, sizeof(blocksizes));
-	if (status != EOK) {
+	if (status) {
 		BMI_ERR("Failed to get block size info from HIF layer");
 		goto exit;
 	}
@@ -124,7 +120,7 @@ QDF_STATUS ol_sdio_extra_initialization(struct ol_context *ol_ctx)
 				4,
 				ol_ctx);
 
-	if (status != EOK) {
+	if (status) {
 		BMI_ERR("BMIWriteMemory for IO block size failed");
 		goto exit;
 	}
@@ -139,7 +135,7 @@ QDF_STATUS ol_sdio_extra_initialization(struct ol_context *ol_ctx)
 				4,
 				ol_ctx);
 
-		if (status != EOK) {
+		if (status) {
 			BMI_ERR("BMI write for yield limit failed\n");
 			goto exit;
 		}
@@ -151,7 +147,7 @@ QDF_STATUS ol_sdio_extra_initialization(struct ol_context *ol_ctx)
 			(uint8_t *)&param,
 			4,
 			ol_ctx);
-	if (status != EOK) {
+	if (status) {
 		BMI_ERR("BMIReadMemory for hi_acs_flags failed");
 		goto exit;
 	}
